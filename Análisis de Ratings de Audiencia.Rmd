@@ -1,0 +1,294 @@
+---
+title: "Análisis de Ratings de Audiencia"
+author: "Sebastian Araujo Ayala"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+## Introducción
+
+En el presente reporte se analizara el comportamiento de los ratings de audiencia de un canal de televisión,
+desagregados por fecha, hora y rango de edad. Nuestro objetivo es identificar patrones temporales,
+tendencias y comportamientos que resulten relavantes para posteriormente construir una serie de tiempo
+y con esta realizar una ventana de proyecciones de audiencia a seis meses.
+
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+```
+
+
+## Carga de datos
+
+Nuestros datos provienen de un Google Sheet proporcionado como parte del caso práctico. Para fines de prácticidad y reproducibilidad, comenzamos por descargar el dataset a formato .csv al computador para trabajar con el mismo de manera local.
+
+
+```{r load-data}
+ratings_raw <- read_csv("ratings_data.csv")
+
+glimpse(ratings_raw)
+```
+
+
+## Limpieza y preparación de datos
+
+
+```{r data-cleaning}
+ratings <- ratings_raw %>%
+  mutate(
+    date = as.Date(date),
+    hour = as.integer(hour),
+    age_range = factor(age_range),
+    ratings = as.numeric(ratings)
+  )
+
+glimpse(ratings)
+```
+
+
+## Evaluación de calidad de los datos
+
+
+```{r data-quality}
+colSums(is.na(ratings))
+range(ratings$hour)
+range(ratings$date)
+sum(duplicated(ratings))
+```
+
+**Observaciones iniciales:**
+
+- No se detectan valores faltantes.
+- Horarios consistentes.
+- Fechas continuas.
+- No hay registros duplicados.
+
+
+
+## Análisis Exploratorio de Datos 
+
+### Ratings promedio por hora
+
+Analizaremos el comportamiento promedio de los ratings a lo largo del horario de transmisión
+con el objetivo de identificar franjas de mayor y menor audiencia.
+
+
+```{r eda-hour}
+ratings %>%
+  group_by(hour) %>%
+  summarise(avg_rating = mean(ratings)) %>%
+  ggplot(aes(x = hour, y = avg_rating)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Ratings promedio por hora",
+    x = "Hora",
+    y = "Rating promedio (miles de personas)"
+  )
+```
+
+---
+
+### Ratings por rango de edad
+
+
+Se comparan los niveles de audiencia entre los distintos rangos etarios disponibles.
+
+
+```{r eda-age}
+ratings %>%
+  group_by(age_range) %>%
+  summarise(avg_rating = mean(ratings)) %>%
+  ggplot(aes(x = age_range, y = avg_rating, fill = age_range)) +
+  geom_col(show.legend = FALSE) +
+  labs(
+    title = "Ratings promedio por rango de edad",
+    x = "Rango de edad",
+    y = "Rating promedio (miles de personas)"
+  )
+
+```
+
+---
+
+### Insights iniciales 
+
+**Hallazgos preliminares:**
+
+- Podemos observar una variación clara de la audiencia según la hora de transmisión.
+- notemos que existen diferencias significativas en el nivel de audiencia entre rangos etarios.
+- Estos patrones sugieren la presencia de estructuras temporales relevantes para la
+construcción de una serie de tiempo.
+
+
+
+## Construcción de la serie de tiempo
+
+Para el análisis temporal y las proyecciones, se construirá una serie de tiempo a nivel diario.
+Los ratings se agregan como el promedio diario de audiencia, lo cual nos permitirá suavizar variaciones
+intradiarias y capturar mejor patrones de tendencia y estacionalidad.
+
+
+```{r build-timeseries}
+daily_ts <- ratings %>%
+  group_by(date) %>%
+  summarise(daily_rating = mean(ratings)) %>%
+  arrange(date)
+
+glimpse(daily_ts)
+
+```
+
+---
+
+### Evolución temporal de los ratings
+
+
+```{r plot-timeseries}
+ggplot(daily_ts, aes(x = date, y = daily_rating)) +
+  geom_line() +
+  labs(
+    title = "Evolución diaria de los ratings",
+    x = "Fecha",
+    y = "Rating promedio diario (miles de personas)"
+  )
+```
+
+---
+
+### Comportamiento de la serie
+
+A nivel visual, la serie de tiempo muestra variaciones recurrentes que sugieren la presencia
+de patrones temporales, así como posibles tendencias a lo largo del periodo analizado.
+Estos elementos motivan el uso de modelos de series de tiempo para la proyección futura
+de la audiencia.
+
+---
+
+## Construcción de la serie de tiempo
+
+
+```{r ts-object}
+rating_ts <- ts(
+  daily_ts$daily_rating,
+  frequency = 7  # estacionalidad semanal
+)
+
+rating_ts
+```
+
+
+**Por qué `frequency = 7`**  
+
+Se utiliza una frecuencia semanal (`frequency = 7`) debido a que el consumo de televisión
+presenta patrones sistemáticos asociados al día de la semana. Factores como rutinas laborales,
+hábitos de ocio y programación diferenciada generan niveles de audiencia distintos entre días
+laborables y fines de semana. Esta configuración permite al modelo capturar explícitamente
+la estacionalidad semanal presente en los datos.
+
+---
+
+## Ajuste del modelo ETS
+
+
+```{r ets-model}
+ets_model <- ets(rating_ts)
+
+summary(ets_model)
+```
+
+
+Este modelo automáticamente decide:
+- Tipo de error (A / M)
+- Tendencia (N / A)
+- Estacionalidad (N / A / M)
+
+---
+
+## Proyección a 6 meses
+
+6 meses ≈ **180 días**
+
+
+```{r ets-forecast}
+forecast_6m <- forecast(ets_model, h = 180)
+
+forecast_6m
+```
+
+
+---
+
+## Visualización del forecast
+
+
+```{r plot-forecast}
+autoplot(forecast_6m) +
+  labs(
+    title = "Proyección de ratings a 6 meses (Modelo ETS)",
+    x = "Fecha (días)",
+    y = "Rating promedio diario (miles de personas)"
+  )
+```
+
+
+---
+
+## Interpretación del modelo y resultados 
+
+Hicimos uso de un modelo ETS para la proyección de los ratings debido a su capacidad para modelar
+de manera explícita el nivel, la tendencia y la estacionalidad de la serie de tiempo.
+
+El modelo ajustado captura patrones recurrentes de corto plazo (principalmente semanales),
+así como una tendencia general en los niveles de audiencia. La proyección a seis meses
+muestra un comportamiento consistente con estos patrones históricos, acompañado de intervalos
+de confianza que reflejan la incertidumbre creciente a medida que el horizonte temporal se amplía.
+
+
+### Supuestos
+
+- La estructura de tendencia y estacionalidad observada en el periodo histórico se mantiene
+  en el horizonte de proyección.
+- No se consideran shocks externos (cambios de programación, eventos especiales, cambios
+  estructurales en el consumo de medios).
+- La estacionalidad es principalmente semanal y estable en el tiempo.
+
+
+### Limitaciones
+
+- El modelo no incorpora variables externas como programación, competencia o eventos especiales.
+- Cambios abruptos en el comportamiento de la audiencia no pueden ser anticipados.
+- La agregación diaria puede ocultar dinámicas intradiarias relevantes.
+
+
+## Conclusiones
+
+- El análisis exploratorio muestra patrones claros de audiencia asociados tanto al horario
+  de transmisión como al rango etario.
+- La agregación diaria permite capturar de manera efectiva la dinámica temporal de los ratings,
+  manteniendo un balance entre granularidad y estabilidad.
+- El modelo ETS seleccionado logra capturar adecuadamente la tendencia y estacionalidad semanal
+  presentes en los datos.
+- La proyección a seis meses sugiere un comportamiento consistente con los patrones históricos,
+  con un incremento en la incertidumbre conforme aumenta el horizonte de proyección.
+
+En conjunto, el análisis proporciona una base sólida para la toma de decisiones relacionadas con
+programación, planeación de contenidos y análisis de audiencia.
+
+
+## Consideraciones para la ampliación del análisis
+
+- Construir modelos de series de tiempo separados por rango de edad para capturar dinámicas
+  específicas de cada segmento.
+- Incorporar variables exógenas como tipo de contenido, eventos especiales o competencia directa.
+- Evaluar modelos alternativos como ARIMA y comparar su desempeño predictivo.
+- Analizar la audiencia a nivel intradiario para optimizar decisiones de programación horaria.
+
+
+
+
+
+
